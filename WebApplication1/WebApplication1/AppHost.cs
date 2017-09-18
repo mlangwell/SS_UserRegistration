@@ -29,11 +29,12 @@ namespace Svr.WebHost
         public override void Configure(Container container)
         {
             //Set JSON web services to return idiomatic JSON camelCase properties
-            ServiceStack.Text.JsConfig.EmitCamelCaseNames = true;
+            //ServiceStack.Text.JsConfig.EmitCamelCaseNames = true; //use Config.UseCamelCase
 
             // overrides to default ServiceStack configuration
             SetConfig(new HostConfig
             {
+                UseCamelCase = true, //recommended 
                 EnableFeatures = Feature.All,
                 DefaultContentType = "application/json",
                 DebugMode = true,       // show stack traces
@@ -68,8 +69,10 @@ namespace Svr.WebHost
 
 
             //Register IOC dependencies
-            container.Register<DbContext>(ctx => new DbContext(cp)).ReusedWithin(ReuseScope.Request);
+            //Consider ReuseScope.None, RequestScope is very rarely what you want
+            container.Register<DbContext>(ctx => new DbContext(cp)).ReusedWithin(ReuseScope.None);
 
+            // Only override default behavior if you need to
             // handle exceptions in services
             this.ServiceExceptionHandlers.Add((httpReq, requestDto, ex) =>
             {
@@ -114,7 +117,12 @@ namespace Svr.WebHost
             var dbFactory = new OrmLiteConnectionFactory(authDbcs, SqlServerDialect.Provider);
 
             container.Register<IDbConnectionFactory>(dbFactory);
-            container.Register<IAuthRepository>(c => new OrmLiteAuthRepository(dbFactory) { UseDistinctRoleTables = true });
+            
+            //If you're using custom RDBMS tables, use the generic constructors to tell OrmLiteAuthRepository which tables to use
+            container.Register<IAuthRepository>(c => new OrmLiteAuthRepository<AuthUser,UserAuthDetails>(dbFactory) 
+                { 
+                    UseDistinctRoleTables = true 
+                });
 
             //Create UserAuth RDBMS Tables
             var authRepo = container.Resolve<IAuthRepository>();
@@ -133,7 +141,7 @@ namespace Svr.WebHost
                 }, "admin123");
 
                 var adminUser = authRepo.GetUserAuthByUserName("admin");
-                authRepo.AssignRoles(adminUser, new System.Collections.Generic.List<String>() { "Admin" });
+                authRepo.AssignRoles(adminUser, new[] { "Admin" });
 
                 authRepo.CreateUserAuth(new Auth.AuthUser
                 {
@@ -144,7 +152,7 @@ namespace Svr.WebHost
                 }, "password123");
 
                 var testUser = authRepo.GetUserAuthByUserName("TestUser");
-                authRepo.AssignRoles(testUser, new System.Collections.Generic.List<String>() { "User" });
+                authRepo.AssignRoles(testUser, new[] { "User" });
             }
 
             //Also store User Sessions in SQL Server
@@ -159,11 +167,13 @@ namespace Svr.WebHost
                 new IAuthProvider[] {
                     new JwtAuthProvider(AppSettings) {
                         HashAlgorithm = "HS256",
+                        //consider re-using `jwt.AuthKeyBase64` AppSetting the JWT AuthProvider uses
                         AuthKey = GetSecurityKeyBytes(AppSettings.Get<string>("JwtSecurityKey", String.Empty)), // allow override with app.config
                         //ExpireTokensInDays = 1, // FUTURE: make this a more reasonable expiration in production
                         ExpireTokensInDays = 7, // 1 Week
                         Issuer = "SvrAppHost",
-                        Audience = "http://*:8080", // FUTURE: Should this reflect api listening port?
+                        //setting unnecessary JWT headers bloats the payload unnecessarily
+                        //Audience = "http://*:8080", // FUTURE: Should this reflect api listening port?
                         SetBearerTokenOnAuthenticateResponse = true,
                         
                         /*
@@ -190,7 +200,12 @@ namespace Svr.WebHost
             }));
 
             //Provide service for new users to register so they can login with supplied credentials.
-            Plugins.Add(new RegistrationFeature());
+            Plugins.Add(new RegistrationFeature 
+            {
+                DisableUpdates = true, //requires v4.5.15 on MyGet
+            });
+            //If you're using your own custom RegistrationFeature you're taking over complete control over the implementation
+            //which no longer uses ServiceStack's built-in implementation
         }
 
         private const string SECURITY_PASSPHRASE = "ThisIsAnImportantStringAndIHaveNoIdeaIfThisIsVerySecureOrNot!";
